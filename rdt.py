@@ -34,8 +34,7 @@ class RDTSocket(UnreliableSocket):
         #############################################################################
         self.timeout = 1
         self.congWin = 1
-        # self.threshold
-        self.MSS = 512
+        self.MSS = 1024
         self.seqNum = 0
         self.ackNum = 0
         self.sendAckNum = 0
@@ -59,8 +58,20 @@ class RDTSocket(UnreliableSocket):
         #############################################################################
         # TODO: YOUR CODE HERE                                                      #
         #############################################################################
+        data, addr = self.recvfrom(200+self.MSS)
+        print(data)
+        print(addr)
+        self._recv_from = addr
         conn = RDTSocket(self._rate)
-        addr = self._recv_from
+        conn.set_send_to(addr)
+        startTime = time.perf_counter()
+        conn.seqNum += 1
+        conn.ackNum += 1
+        packet = RDTProtocol(seqNum=self.seqNum,
+                             ackNum=self.ackNum, checksum=0, payload=None, syn=True, fin=False, ack=True)
+        conn.sendto(packet.encode(), self._recv_from)
+        conn.waitForAck({0: packet}, startTime)
+        print('Connection established')
         #############################################################################
         #                             END OF YOUR CODE                              #
         #############################################################################
@@ -76,15 +87,21 @@ class RDTSocket(UnreliableSocket):
         self.started = True
         self.seqNum = self.ackNum = self.sendAckNum = 0
         self._send_to = address
-        print('Send to %s:%s' % address)
+        print('Connect to %s:%s' % address)
         startTime = time.perf_counter()
+        self.seqNum += 1
         threading.Thread(target=self.count).start()
         # seqNum: int, ackNum: int, checksum: int, payload: bytes, syn: bool = False, fin: bool = False, ack:bool = False
         packet = RDTProtocol(seqNum=self.seqNum,
                              ackNum=self.ackNum, checksum=0, payload=None, syn=True, fin=False, ack=False)
-        self.seqNum += 1
+
         self.sendto(packet.encode(), self._send_to)
         self.waitForAck({0: packet}, startTime)
+        self.seqNum += 1
+        self.ackNum += 1
+        packet = RDTProtocol(seqNum=self.seqNum,
+                             ackNum=self.ackNum, checksum=0, payload=None, syn=False, fin=False, ack=True)
+        self._send_to(packet.encode(), self._send_to)
         #############################################################################
         raise NotImplementedError()
         #############################################################################
@@ -120,14 +137,22 @@ class RDTSocket(UnreliableSocket):
         assert self._send_to, "Connection not established yet. Use sendto instead."
         #############################################################################
         # TODO: YOUR CODE HERE                                                      #
-        startTime = time.perf_counter()
-        threading.Thread(target=self.count).start()
-        # seqNum: int, ackNum: int, checksum: int, payload: bytes, syn: bool = False, fin: bool = False, ack:bool = False
-        packet = RDTProtocol(seqNum=self.seqNum,
-                             ackNum=self.ackNum, checksum=0, payload=data, syn=True, fin=False, ack=False)
-        self.seqNum += 1
-        self.sendto(packet, self._send_to)
-        self.waitForAck({0: packet}, startTime)
+        packetDict = {}
+        packetNum = 0
+        packetList = []
+        while packetNum * self.MSS < len(data):
+            self.seqNum += self.MSS
+            packet = RDTProtocol(seqNum=self.seqNum, ackNum=self.ackNum, checksum=0, payload=data[packetNum * self.MSS, packetNum * self.MSS + self.MSS], syn=True, fin=False, ack=False)
+            print('pkt:%d'% packetNum)
+            packetDict[packet.seqNum] = packet
+            packetList.append(packet)
+            packetNum+=1
+        for i in range(len(packetList)):
+            if (i + 1) % self.congWin == 0:
+                self.sendPackets(packetDict)
+                packetDict = {}
+        if packetDict:
+            self.sendPackets(packetDict)
         #############################################################################
         raise NotImplementedError()
         #############################################################################
@@ -154,6 +179,12 @@ class RDTSocket(UnreliableSocket):
     def set_recv_from(self, recv_from):
         self._recv_from = recv_from
 
+    def sendPackets(self, packetDict):
+        startTime = time.time()
+        for p in packetDict.values():
+            self.sendto(p.encode(), self._send_to)
+        self.waitForAck(packetDict, startTime)
+
     def count(self):
         while True:
             last = self.seqNum
@@ -176,7 +207,7 @@ class RDTSocket(UnreliableSocket):
             try:
                 self.settimeout(self.timeout)
                 ackNum = self.receiveAck()
-                # print('ack:\n '+str(ackNum))
+                print('ack: %d'% ackNum)
                 if ackNum == self.seqNum:
                     self.sendAckNum = ackNum
                     ackFinish = True
@@ -195,10 +226,10 @@ class RDTSocket(UnreliableSocket):
                 self.resendTimes += 1
                 if isinstance(e, socket.timeout):
                     timeout = True
-                # print(str(self.seqNum))
+                print(str(self.seqNum))
                 resendTimes += 1
-                # print('resend %d at %d times' % (self.sendAckNum, resendTimes))
-                # print('timeout '+str(self.timeout)+'sec')
+                print('resend %d at %d times' % (self.sendAckNum, resendTimes))
+                print('timeout '+str(self.timeout)+'sec')
                 # Todo: 不理解这个if
                 if resendTimes >= 5:
                     if not self.started:
@@ -207,7 +238,7 @@ class RDTSocket(UnreliableSocket):
                     else:
                         self.started = False
                         raise Exception('resend times >= 5')
-                self.sendto([packetDict[self.sendAckNum]])
+                self.sendto(packetDict[self.sendAckNum].encode(), self._send_to)
                 self.updataCongWin(True, timeout)
                 self.updataTimeout(True)
 
@@ -276,7 +307,7 @@ class RDTProtocol:
      - ACK                      Acknowledge
 
     Ranges:
-     - Payload Length           0 - 512  (append zeros to the end if length < 512)
+     - Payload Length           0 - 1024  (append zeros to the end if length < 512)
      - Sequence Number          0 - 2^16
      - Acknowledgement Number   0 - 2^16
 
@@ -285,7 +316,7 @@ class RDTProtocol:
     Size of sender's window     1000
     """
     HEADER_LEN = 12
-    MAX_PAYLOAD_LEN = 512
+    MAX_PAYLOAD_LEN = 1024
     SEGMENT_LEN = MAX_PAYLOAD_LEN + HEADER_LEN
     SEQ_NUM_BOUND = 2^16
 
@@ -293,8 +324,8 @@ class RDTProtocol:
         self.syn = syn
         self.fin = fin
         self.ack = ack
-        self.seqNum = seqNum
-        self.ackNum = ackNum
+        self.seqNum = seqNum%self.SEQ_NUM_BOUND
+        self.ackNum = ackNum%self.SEQ_NUM_BOUND
         self.checksum = checksum
         if payload is not None and len(payload) > RDTProtocol.MAX_PAYLOAD_LEN:
             raise ValueError
@@ -322,8 +353,9 @@ class RDTProtocol:
     def parse(segment: Union[bytes, bytearray]) -> 'RDTProtocol':
         """Parse raw bytes into an RDTSegment object"""
         try:
-            assert len(segment) == RDTProtocol.SEGMENT_LEN
+            # assert len(segment) == RDTProtocol.SEGMENT_LEN
             # assert 0 <= len(segment) - 12 <= RDTProtocol.MAX_PAYLOAD_LEN
+            print('calc_checksum: %d' % calc_checksum(segment))
             assert calc_checksum(segment) == 0
             head, = struct.unpack('!H', segment[0:2])
             syn = (head & 0x8000) != 0
@@ -331,8 +363,8 @@ class RDTProtocol:
             ack = (head & 0x2000) != 0
             length = head & 0x1FFF
             # assert length + 6 == len(segment)
-            seq_num, ack_num, checksum = struct.unpack('!IIH', segment[2:10])
-            payload = segment[10:10+length]
+            seq_num, ack_num, checksum = struct.unpack('!IIH', segment[2:12])
+            payload = segment[12:12+length]
             return RDTProtocol(seq_num, ack_num, checksum, payload, syn, fin, ack)
         except AssertionError as e:
             raise ValueError from e
@@ -343,9 +375,11 @@ def calc_checksum(segment: Union[bytes, bytearray]) -> int:
     bytes_sum = sum(((a << 8) + b for a, b in zip(i, i)))  # for a, b: (s[0], s[1]), (s[2], s[3]), ...
     if len(segment) % 2 == 1:  # pad zeros to form a 16-bit word for checksum
         bytes_sum += segment[-1] << 8
-    # add the overflow at the end (adding four times is sufficient)
-    for i in range(3):
-        bytes_sum = (bytes_sum & 0xFFFF) + (bytes_sum >> 16)
+    # add the overflow at the end (adding two times is sufficient)
+    print(bytes_sum)
+    bytes_sum = (bytes_sum & 0xFFFF) + (bytes_sum >> 16)
+    bytes_sum = (bytes_sum & 0xFFFF) + (bytes_sum >> 16)
+    print(bytes_sum)
     return ~bytes_sum & 0xFFFF
 
 
