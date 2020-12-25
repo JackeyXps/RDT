@@ -32,7 +32,6 @@ class RDTSocket(UnreliableSocket):
         #############################################################################
         # TODO: ADD YOUR NECESSARY ATTRIBUTES HERE
         #############################################################################
-        self.sendAddr = addr
         self.timeout = 1
         self.congWin = 1
         # self.threshold
@@ -57,11 +56,11 @@ class RDTSocket(UnreliableSocket):
 
         This function should be blocking. 
         """
-        conn, addr = RDTSocket(self._rate), None
         #############################################################################
         # TODO: YOUR CODE HERE                                                      #
         #############################################################################
-
+        conn = RDTSocket(self._rate)
+        addr = self._recv_from
         #############################################################################
         #                             END OF YOUR CODE                              #
         #############################################################################
@@ -76,10 +75,16 @@ class RDTSocket(UnreliableSocket):
         # TODO: YOUR CODE HERE
         self.started = True
         self.seqNum = self.ackNum = self.sendAckNum = 0
-        self.sendAddr = address
+        self._send_to = address
         print('Send to %s:%s' % address)
-        self.send(None)
-
+        startTime = time.perf_counter()
+        threading.Thread(target=self.count).start()
+        # seqNum: int, ackNum: int, checksum: int, payload: bytes, syn: bool = False, fin: bool = False, ack:bool = False
+        packet = RDTProtocol(seqNum=self.seqNum,
+                             ackNum=self.ackNum, checksum=0, payload=None, syn=True, fin=False, ack=False)
+        self.seqNum += 1
+        self.sendto(packet.encode(), self._send_to)
+        self.waitForAck({0: packet}, startTime)
         #############################################################################
         raise NotImplementedError()
         #############################################################################
@@ -115,13 +120,14 @@ class RDTSocket(UnreliableSocket):
         assert self._send_to, "Connection not established yet. Use sendto instead."
         #############################################################################
         # TODO: YOUR CODE HERE                                                      #
-        startTime = time.time()
+        startTime = time.perf_counter()
         threading.Thread(target=self.count).start()
         # seqNum: int, ackNum: int, checksum: int, payload: bytes, syn: bool = False, fin: bool = False, ack:bool = False
         packet = RDTProtocol(seqNum=self.seqNum,
                              ackNum=self.ackNum, checksum=0, payload=data, syn=True, fin=False, ack=False)
         self.seqNum += 1
-        self.sendto(packet, self.sendAddr)
+        self.sendto(packet, self._send_to)
+        self.waitForAck({0: packet}, startTime)
         #############################################################################
         raise NotImplementedError()
         #############################################################################
@@ -153,7 +159,7 @@ class RDTSocket(UnreliableSocket):
             last = self.seqNum
             self.resendTimes = 0
             time.sleep(0.5)
-            if self.started:
+            if self.started and self.resendTimes <= 5:
                 print('sending rate: %dKB/s' % ((self.seqNum-last)*2/(1024)))
                 print('resend ratio: %.3f%%' %
                       ((self.resendTimes*self.MSS*100)/(self.seqNum-last+1)))
@@ -205,7 +211,7 @@ class RDTSocket(UnreliableSocket):
                 self.updataCongWin(True, timeout)
                 self.updataTimeout(True)
 
-        endTime = time.time()
+        endTime = time.perf_counter()
         rtt = endTime - startTime
         self.updataCongWin(resendTimes != 0, timeout)
         self.updataTimeout(resendTimes != 0, rtt)
@@ -232,10 +238,9 @@ class RDTSocket(UnreliableSocket):
                 self.congWin *= 2
 
     def receiveAck(self):
-        raise NotImplementedError()
-        # rawData, addr = self.sendSocket.recvfrom(200 + self.MSS)
-        # packet = pickle.loads(rawData)
-        # return packet['ackNum']
+        rawData, addr = self.recvfrom(200 + self.MSS)
+        packet = RDTProtocol.parse(rawData)
+        return packet.ackNum
 """
 
 You can define additional functions and classes to do thing such as packing/unpacking packets, or threading.
