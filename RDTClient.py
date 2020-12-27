@@ -8,7 +8,7 @@ if __name__=='__main__':
     # client = socket(AF_INET, SOCK_STREAM) # check what python socket does
     client.connect(('127.0.0.1', 9999))
 
-    client.sendto(b'aaa', ('127.0.0.1', 9999))
+    client.send(b'aaa')
     # echo = b''
     # count = 5
     # slice_size = 2048
