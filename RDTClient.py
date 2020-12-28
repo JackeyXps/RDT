@@ -9,6 +9,8 @@ if __name__=='__main__':
     client.connect(('127.0.0.1', 9999))
 
     client.send(b'aaa')
+
+    client.close()
     # echo = b''
     # count = 5
     # slice_size = 2048
