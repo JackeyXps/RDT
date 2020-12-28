@@ -230,17 +230,16 @@ class RDTSocket(UnreliableSocket):
         packet = RDTProtocol(seqNum=self.sendSeqNum,
                              ackNum=self.sendAckNum, checksum=0, payload=b'f', syn=False, fin=True, ack=False)
         self.sendto(packet.encode(), self._send_to)
-        self.waitForAck({packet.seqNum: packet}, startTime)
-
+        self.waitForAck({packet.seqNum: packet}, startTime, self.sendSeqNum)
         data, addr = self.recvfrom(200 + RDTProtocol.SEGMENT_LEN)
         packet_receive = RDTProtocol.parse(data)
         packet = RDTProtocol(seqNum=self.sendSeqNum,
                              ackNum=self.sendAckNum, checksum=0, payload=None, syn=False, fin=False, ack=True)
 
-        t_end = time.time() + self.maxWaitTime
-        while not packet_receive.fin and time.time() < t_end:
+        t_end = time.perf_counter() + self.maxWaitTime
+        while not packet_receive.fin and time.perf_counter() < t_end:
             print('packet_receive.ackNum: %d' % packet_receive.ackNum)
-            packet.sendto(packet.encode(), self._recv_from)
+            self.sendto(packet.encode(), self._recv_from)
             data, addr = self.recvfrom(200 + RDTProtocol.SEGMENT_LEN)
             packet_receive = RDTProtocol.parse(data)
 
@@ -257,7 +256,7 @@ class RDTSocket(UnreliableSocket):
         self._recv_from = recv_from
 
     def sendPackets(self, packetDict):
-        startTime = time.time()
+        startTime = time.perf_counter()
         for p in packetDict.values():
             print('send seq:%d' % p.seqNum)
             self.sendto(p.encode(), self._send_to)
