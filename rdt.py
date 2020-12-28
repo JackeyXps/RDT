@@ -296,7 +296,8 @@ class RDTSocket(UnreliableSocket):
 
             except Exception as e:
                 sendNum = 0
-                for key in self.packetDict.keys():
+                keyList = sorted(self.packetDict)
+                for key in keyList:
                     if key > self.sendAckNum:
                         sendNum = key
                 self.resendTimes += 1
