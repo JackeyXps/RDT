@@ -36,6 +36,7 @@ class RDTSocket(UnreliableSocket):
         self.congWin = 1
         self.threshold = 100
         self.MSS = 1024
+        self.maxWaitTime = 5
         self.seqNum = 0
         self.ackNum = 0
         self.sendSeqNum = 0
@@ -91,6 +92,7 @@ class RDTSocket(UnreliableSocket):
             data, addr = conn.recvfrom(200 + RDTProtocol.SEGMENT_LEN)
             packet_receive = RDTProtocol.parse(data)
         conn.ackNum = 2
+        self.started = True
         print('server: Connection established')
         #############################################################################
         #                             END OF YOUR CODE                              #
@@ -143,9 +145,8 @@ class RDTSocket(UnreliableSocket):
         #############################################################################
         # TODO: YOUR CODE HERE                                                      #
         #############################################################################
-        finish = False
         data = b''
-        while not finish and len(data) < buffer_size:
+        while self.started and len(data) < buffer_size:
             rawdata, addr = self.recvfrom(buffer_size)
             packet = RDTProtocol.parse(rawdata)
             while addr != self._recv_from:
@@ -162,9 +163,9 @@ class RDTSocket(UnreliableSocket):
                     packet = self.packetDict_receive[self.ackNum]
                     data += packet.payload
                     print('ackNum:%d' % self.ackNum)
-                    if packet.fin == True:
-                        # self.end()
-                        finish = True
+                    if packet.fin:
+                        self.started = False
+                        data = b''
                         break
                     elif len(data) >= buffer_size: # 可能有超过buffer_size的bug
                         break
@@ -223,6 +224,27 @@ class RDTSocket(UnreliableSocket):
         # TODO: YOUR CODE HERE                                                      #
         #############################################################################
 
+        print('Close connection with %s:%s' % self._send_to)
+        startTime = time.perf_counter()
+        self.sendSeqNum += 1
+        packet = RDTProtocol(seqNum=self.sendSeqNum,
+                             ackNum=self.sendAckNum, checksum=0, payload=b'f', syn=False, fin=True, ack=False)
+        self.sendto(packet.encode(), self._send_to)
+        self.waitForAck({packet.seqNum: packet}, startTime)
+
+        data, addr = self.recvfrom(200 + RDTProtocol.SEGMENT_LEN)
+        packet_receive = RDTProtocol.parse(data)
+        packet = RDTProtocol(seqNum=self.sendSeqNum,
+                             ackNum=self.sendAckNum, checksum=0, payload=None, syn=False, fin=False, ack=True)
+
+        t_end = time.time() + self.maxWaitTime
+        while not packet_receive.fin and time.time() < t_end:
+            print('packet_receive.ackNum: %d' % packet_receive.ackNum)
+            packet.sendto(packet.encode(), self._recv_from)
+            data, addr = self.recvfrom(200 + RDTProtocol.SEGMENT_LEN)
+            packet_receive = RDTProtocol.parse(data)
+
+        self.started = False
         #############################################################################
         #                             END OF YOUR CODE                              #
         #############################################################################
