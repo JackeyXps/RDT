@@ -47,6 +47,7 @@ class RDTSocket(UnreliableSocket):
         self.resendTimes = 0
         self.packetDict = {}
         self.packetDict_receive = {}
+        self.receivePacketNum = 0
         self.ackDict_receive = {}
         #############################################################################
         #                             END OF YOUR CODE                              #
@@ -94,7 +95,7 @@ class RDTSocket(UnreliableSocket):
             packet_receive = RDTProtocol.parse(data)
         conn.ackNum = 2
         conn.started = True
-        threading.Thread(target=self.receivePacket).start()
+        threading.Thread(target=conn.receivePacket).start()
         print('server: Connection established')
         #############################################################################
         #                             END OF YOUR CODE                              #
@@ -128,6 +129,7 @@ class RDTSocket(UnreliableSocket):
             packet_receive = RDTProtocol.parse(data)
         self._send_to = addr
         self._recv_from = self._send_to
+        self.sendAckNum = 1
         self.sendSeqNum = 2
         packet = RDTProtocol(seqNum=self.sendSeqNum,
                              ackNum=self.sendAckNum, checksum=0, payload=b's', syn=False, fin=False, ack=True)
@@ -156,24 +158,21 @@ class RDTSocket(UnreliableSocket):
         #############################################################################
         data = b''
         while self.started and len(data) < buffer_size:
-            while len(self.packetDict_receive) == 0:
+            while self.receivePacketNum == len(self.packetDict_receive):
                 continue
-            seqNum, packet = self.packetDict_receive.popitem()
-            if packet.seqNum >= self.ackNum and packet.seqNum not in self.packetDict_receive:
-                self.packetDict_receive[packet.seqNum] = packet
-            if packet.seqNum - len(packet.payload) == self.ackNum:
-                # error
-                while self.ackNum + len(packet.payload) in self.packetDict_receive:
-                    self.ackNum = (self.ackNum + len(packet.payload)) % (pow(2, 16) - 1)
-                    packet = self.packetDict_receive[self.ackNum]
-                    data += packet.payload
-                    print('ackNum:%d' % self.ackNum)
-                    if packet.fin:
-                        self.started = False
-                        data = b''
-                        break
-                    elif len(data) >= buffer_size: # 可能有超过buffer_size的bug
-                        break
+            self.receivePacketNum = len(self.packetDict_receive)
+            while self.ackNum in self.packetDict_receive:
+                packet = self.packetDict_receive[self.ackNum]
+                print('receive data packet seq:%d ack:%d payload:%d' % (packet.seqNum, packet.ackNum, len(packet.payload)))
+                if len(data) + len(packet.payload) > buffer_size: # 可能有超过buffer_size的bug
+                    return data
+                data += packet.payload
+                self.ackNum = (self.ackNum + len(packet.payload)) % RDTProtocol.SEQ_NUM_BOUND
+                print('ackNum:%d' % self.ackNum)
+                if packet.fin:
+                    self.started = False
+                    data = b''
+                    break
             packet = RDTProtocol(seqNum=self.seqNum,
                                  ackNum=self.ackNum, checksum=0, payload=None, syn=False, fin=False, ack=True)
             self.sendto(packet.encode(), self._recv_from)
@@ -198,7 +197,7 @@ class RDTSocket(UnreliableSocket):
         # TODO: YOUR CODE HERE                                                      #
         packetNum = 0
         while packetNum * self.MSS < len(data):
-            self.sendSeqNum = (self.sendSeqNum + len(data[packetNum * self.MSS: packetNum * self.MSS + self.MSS]))%(pow(2, 16)-1)
+            self.sendSeqNum = (self.sendSeqNum + len(data[packetNum * self.MSS: packetNum * self.MSS + self.MSS]))%RDTProtocol.SEQ_NUM_BOUND
             packet = RDTProtocol(seqNum=self.sendSeqNum, ackNum=self.sendAckNum, checksum=0,
                                  payload=data[packetNum * self.MSS: packetNum * self.MSS + self.MSS], syn=False,
                                  fin=False, ack=False)
@@ -227,7 +226,7 @@ class RDTSocket(UnreliableSocket):
         packet = RDTProtocol(seqNum=self.sendSeqNum,
                              ackNum=self.sendAckNum, checksum=0, payload=b'f', syn=False, fin=True, ack=False)
         self.sendto(packet.encode(), self._send_to)
-        self.waitForAck(startTime)
+        self.waitForAck(startTime, packet.seqNum)
         data, addr = self.recvfrom(200 + RDTProtocol.SEGMENT_LEN)
         packet_receive = RDTProtocol.parse(data)
         packet = RDTProtocol(seqNum=self.sendSeqNum,
@@ -255,14 +254,16 @@ class RDTSocket(UnreliableSocket):
     def sendPackets(self):
         startTime = time.perf_counter()
         count = 0
-        for packet in self.packetDict.values():
+        seqNumList = sorted(self.packetDict)
+        print(seqNumList)
+        for seqNum in seqNumList:
             count += 1
-            self.sendto(packet.encode(), self._send_to)
-            print('send seq:%d' % packet.seqNum)
+            self.sendto(self.packetDict[seqNum].encode(), self._send_to)
+            print('send seq:%d' % self.packetDict[seqNum].seqNum)
             if count % self.congWin == 0:
-                self.waitForAck(startTime)
+                self.waitForAck(startTime, self.packetDict[seqNum].seqNum)
 
-    def waitForAck(self, startTime):
+    def waitForAck(self, startTime, sendSeqNum):
         # print('send '+str(self.sendSeqNum))
         ackFinish = False
         resendTimes = 0
@@ -279,7 +280,7 @@ class RDTSocket(UnreliableSocket):
                                          ackNum=1, checksum=0, payload=b's', syn=True, fin=False,
                                          ack=True)
                     self.sendto(packet.encode(), self._send_to)
-                if ackNum >= self.sendSeqNum:
+                if ackNum >= sendSeqNum:
                     self.sendAckNum = ackNum
                     ackFinish = True
                 elif ackNum > self.sendAckNum:
@@ -296,12 +297,12 @@ class RDTSocket(UnreliableSocket):
             except Exception as e:
                 sendNum = 0
                 for key in self.packetDict.keys():
-                    if key >= self.sendAckNum:
+                    if key > self.sendAckNum:
                         sendNum = key
                 self.resendTimes += 1
                 if isinstance(e, socket.timeout):
                     timeout = True
-                print('seqNum: %d' % self.sendSeqNum)
+                print('seqNum: %d' % sendSeqNum)
                 resendTimes += 1
                 print('resend %d at %d times' % (sendNum, resendTimes))
                 print('timeout ' + str(self.timeout) + 'sec')
@@ -322,7 +323,7 @@ class RDTSocket(UnreliableSocket):
             self.timeout = 0.8 * self.timeout + 0.2 * rtt + 0.2 * rtt
 
     def updataCongWin(self, resend, timeout):
-        if resend == True:
+        if resend == True and self.congWin > 1:
             self.threshold = math.ceil(0.5 * self.congWin)
             if timeout == True:
                 self.congWin = 1
@@ -335,27 +336,32 @@ class RDTSocket(UnreliableSocket):
                 self.congWin *= 2
 
     def receiveAck(self):
-        time.sleep(self.timeout)
-        if len(self.ackDict_receive) > 0:
+        start = time.perf_counter()
+        while len(self.ackDict_receive) == 0 and time.perf_counter() - start < self.timeout:
+            continue
+        if time.perf_counter() - start >= self.timeout:
+            raise Exception(socket.timeout)
+        else:
             seqNum, packet = self.ackDict_receive.popitem()
             return packet.ackNum, packet.syn
-        else:
-            raise Exception
 
     def receivePacket(self):
         while True:
             if self.started:
-                data, addr = self.recvfrom(200 + RDTProtocol.SEGMENT_LEN)
-                packet = RDTProtocol.parse(data)
-                if addr == self._recv_from:
-                    if packet.ack:
-                        self.ackDict_receive[packet.seqNum] = packet
-                        print('receive ack packet from %s %s' % addr)
-                        print('seq:%d ack:%d' % (packet.seqNum, packet.ackNum))
-                    elif packet.payload:
-                        self.packetDict_receive[packet.seqNum] = packet
-                        print('receive data packet from %s %s' % addr)
-                        print('seq:%d ack:%d payloadLength:%d' % (packet.seqNum, packet.ackNum, len(packet.payload)))
+                try:
+                    data, addr = self.recvfrom(200 + RDTProtocol.SEGMENT_LEN)
+                    packet = RDTProtocol.parse(data)
+                    if addr == self._recv_from:
+                        if packet.ack:
+                            self.ackDict_receive[packet.seqNum] = packet
+                            print('receive ack packet from %s %s' % addr)
+                            print('seq:%d ack:%d' % (packet.seqNum, packet.ackNum))
+                        elif packet.payload and not packet.syn:
+                            self.packetDict_receive[packet.seqNum - len(packet.payload)] = packet
+                            print('receive data packet from %s %s' % addr)
+                            print('seq:%d ack:%d payloadLength:%d' % (packet.seqNum, packet.ackNum, len(packet.payload)))
+                except Exception:
+                    continue
             else:
                 break
     def count(self):
@@ -407,8 +413,8 @@ class RDTProtocol:
 
     Ranges:
      - Payload Length           0 - 1024  (append zeros to the end if length < 512)
-     - Sequence Number          0 - 2^16
-     - Acknowledgement Number   0 - 2^16
+     - Sequence Number          0 - 2^32 - 1
+     - Acknowledgement Number   0 - 2^32 - 1
 
     Checksum Algorithm:         16 bit one's complement of the one's complement sum
 
@@ -417,7 +423,7 @@ class RDTProtocol:
     HEADER_LEN = 12
     MAX_PAYLOAD_LEN = 1024
     SEGMENT_LEN = MAX_PAYLOAD_LEN + HEADER_LEN
-    SEQ_NUM_BOUND = pow(2, 16) - 1
+    SEQ_NUM_BOUND = pow(2, 32) - 1
 
     def __init__(self, seqNum: int, ackNum: int, checksum: int, payload: bytes, syn: bool = False, fin: bool = False,
                  ack: bool = False):
