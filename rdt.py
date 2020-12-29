@@ -245,7 +245,7 @@ class RDTSocket(UnreliableSocket):
         # TODO: YOUR CODE HERE                                                      #
         #############################################################################
 
-        print('Close connection with %s:%s' % self._send_to)
+        print('Close connection with %s:%s' % self._recv_from)
         if self.isClient:
             time.sleep(0.5)
         self.sendSeqNum += 1
@@ -282,6 +282,7 @@ class RDTSocket(UnreliableSocket):
                     data, addr = self.recvfrom(200 + RDTProtocol.SEGMENT_LEN)
                     packet_receive, checksum = RDTProtocol.parse(data)
                     print('Wait for FIN')
+                    print('checksum: %d, fin:%s'%(checksum, packet_receive.fin))
                     if checksum == 0 and packet_receive.fin:
                         recieveFin = True
                 except Exception as e:
@@ -309,10 +310,10 @@ class RDTSocket(UnreliableSocket):
                     if checksum == 0 and packet_receive.ack:
                         recieveAck = True
                     elif checksum == 0 and packet_receive.fin:
-                        packet = RDTProtocol(seqNum=self.seqNum,
+                        packet2 = RDTProtocol(seqNum=self.seqNum,
                                              ackNum=self.ackNum, checksum=0, payload=None, syn=False, fin=False,
                                              ack=True)
-                        self.sendto(packet.encode(), self._recv_from)
+                        self.sendto(packet2.encode(), self._recv_from)
                         print('已发送ack包:%d' % self.ackNum)
                 except Exception as e:
                     if isinstance(e, socket.timeout):
