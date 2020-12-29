@@ -83,18 +83,22 @@ class RDTSocket(UnreliableSocket):
         conn.ackNum = 1
         packet = RDTProtocol(seqNum=conn.seqNum,
                              ackNum=conn.ackNum, checksum=0, payload=None, syn=True, fin=False, ack=True)
-        conn.sendto(packet.encode(), conn._recv_from)
-        data, addr = conn.recvfrom(200 + RDTProtocol.SEGMENT_LEN)
-        print(data)
-        print(addr)
-        packet_receive, checksum = RDTProtocol.parse(data)
-        while not packet_receive.ack or not packet_receive.ackNum == conn.seqNum or checksum != 0:
-            print('packet_receive.ackNum: %d' % packet_receive.ackNum)
-            print(data)
-            print(addr)
-            conn.sendto(packet.encode(), conn._recv_from)
-            data, addr = conn.recvfrom(200 + RDTProtocol.SEGMENT_LEN)
-            packet_receive, checksum = RDTProtocol.parse(data)
+        recieveAck = False
+        while not recieveAck:
+            try:
+                conn.settimeout(conn.timeout)
+                conn.sendto(packet.encode(), conn._recv_from)
+                data, addr = conn.recvfrom(200 + RDTProtocol.SEGMENT_LEN)
+                print(data)
+                print(addr)
+                packet_receive, checksum = RDTProtocol.parse(data)
+                print('packet_receive.ackNum: %d' % packet_receive.ackNum)
+                if packet_receive.ack and packet_receive.ackNum == conn.seqNum and checksum == 0:
+                    recieveAck = True
+            except Exception as e:
+                if isinstance(e, socket.timeout):
+                    print('timeout ' + str(conn.timeout) + 'sec')
+                    conn.updataTimeout(True)
         conn.ackNum = 2
         conn.started = True
         conn.isClient = False
@@ -122,14 +126,20 @@ class RDTSocket(UnreliableSocket):
         # seqNum: int, ackNum: int, checksum: int, payload: bytes, syn: bool = False, fin: bool = False, ack:bool = False
         packet = RDTProtocol(seqNum=self.sendSeqNum,
                              ackNum=self.sendAckNum, checksum=0, payload=b's', syn=True, fin=False, ack=False)
-        self.sendto(packet.encode(), self._send_to)
-        data, addr = self.recvfrom(200 + RDTProtocol.SEGMENT_LEN)
-        packet_receive, checksum = RDTProtocol.parse(data)
-        while checksum != 0 or not packet_receive.ack or not packet_receive.syn or not packet_receive.ackNum == self.sendSeqNum:
-            print('Client syn packet_receive.ackNum: %d' % packet_receive.ackNum)
-            self.sendto(packet.encode(), self._send_to)
-            data, addr = self.recvfrom(200 + RDTProtocol.SEGMENT_LEN)
-            packet_receive, checksum = RDTProtocol.parse(data)
+        recieveAck = False
+        while not recieveAck:
+            try:
+                self.settimeout(self.timeout)
+                self.sendto(packet.encode(), self._send_to)
+                data, addr = self.recvfrom(200 + RDTProtocol.SEGMENT_LEN)
+                packet_receive, checksum = RDTProtocol.parse(data)
+                print('receive packet  checksum:%d ack:%s syn:%s ackNum:%d' % (checksum, packet_receive.ack, packet.syn, packet_receive.ackNum))
+                if checksum == 0 and packet_receive.ack and packet_receive.syn and packet_receive.ackNum == self.sendSeqNum:
+                    recieveAck = True
+            except Exception as e:
+                if isinstance(e, socket.timeout):
+                    print('timeout ' + str(self.timeout) + 'sec')
+                    self.updataTimeout(True)
         self._send_to = addr
         self._recv_from = self._send_to
         self.sendAckNum = 1
@@ -234,56 +244,75 @@ class RDTSocket(UnreliableSocket):
 
         print('Close connection with %s:%s' % self._send_to)
         if self.isClient:
-            time.sleep(1)
+            time.sleep(0.5)
         self.sendSeqNum += 1
         self.started = False
         packet = RDTProtocol(seqNum=self.sendSeqNum, ackNum=self.sendAckNum, checksum=0,
                              payload=b'f', syn=False, fin=True, ack=False)
-        packet_receive = RDTProtocol(seqNum=self.sendSeqNum, ackNum=self.sendAckNum, checksum=0,
-                                     payload=None, syn=False, fin=False, ack=False)
 
         print('------------seqNum: ' + str(self.seqNum) + '--------------------')
         print('------------ackNum: ' + str(self.ackNum) + '--------------------')
         print('------------sendSeqNum: ' + str(self.sendSeqNum) + '--------------------')
         print('------------sendAckNum: ' + str(self.sendAckNum) + '--------------------')
         if self.isClient:
-            time.sleep(1)
-            self.sendto(packet.encode(), self._recv_from)
-            data, addr = self.recvfrom(200 + RDTProtocol.SEGMENT_LEN)
-            packet_receive, checksum = RDTProtocol.parse(data)
+            recieveAck = False
+            while not recieveAck:
+                try:
+                    self.settimeout(self.timeout)
+                    self.sendto(packet.encode(), self._recv_from)
+                    data, addr = self.recvfrom(200 + RDTProtocol.SEGMENT_LEN)
+                    packet_receive, checksum = RDTProtocol.parse(data)
+                    print('receive packet  checksum:%d ack:%s' % (checksum, packet_receive.ack))
+                    print('Send FIN to close')
+                    if checksum == 0 and packet_receive.ack and packet_receive.ackNum == self.sendSeqNum:
+                        recieveAck = True
+                except Exception as e:
+                    if isinstance(e, socket.timeout):
+                        print('timeout ' + str(self.timeout) + 'sec')
+                        self.updataTimeout(True)
 
-            while checksum != 0 or not packet_receive.ack and packet_receive.ackNum != self.sendSeqNum:
-                self.sendto(packet.encode(), self._recv_from)
-                data, addr = self.recvfrom(200 + RDTProtocol.SEGMENT_LEN)
-                packet_receive, checksum = RDTProtocol.parse(data)
-                print('Send FIN to close')
+            recieveFin = False
+            while not recieveFin:
+                try:
+                    self.settimeout(self.timeout)
+                    data, addr = self.recvfrom(200 + RDTProtocol.SEGMENT_LEN)
+                    packet_receive, checksum = RDTProtocol.parse(data)
+                    print('Wait for FIN')
+                    if checksum == 0 and packet_receive.fin:
+                        recieveFin = True
+                except Exception as e:
+                    if isinstance(e, socket.timeout):
+                        print('timeout ' + str(self.timeout) + 'sec')
+                        self.updataTimeout(True)
 
             packet = RDTProtocol(seqNum=self.sendSeqNum, ackNum=self.sendAckNum, checksum=0,
                                  payload=None, syn=False, fin=False, ack=True)
-            packet_receive = RDTProtocol(seqNum=self.sendSeqNum, ackNum=self.sendAckNum, checksum=0,
-                                         payload=None, syn=False, fin=False, ack=False)
-            self.sendto(packet.encode(), self._recv_from)
-            data, addr = self.recvfrom(200 + RDTProtocol.SEGMENT_LEN)
-            packet_receive, checksum = RDTProtocol.parse(data)
-            while checksum != 0 or not packet_receive.fin:
-                self.sendto(packet.encode(), self._recv_from)
-                data, addr = self.recvfrom(200 + RDTProtocol.SEGMENT_LEN)
-                packet_receive, checksum = RDTProtocol.parse(data)
-                print('send ACK to close')
             for i in range(6):
                 time.sleep(0.5)
                 self.sendto(packet.encode(), self._recv_from)
             print('Client is closed')
         else:
-            self.sendto(packet.encode(), self._recv_from)
-            data, addr = self.recvfrom(200 + RDTProtocol.SEGMENT_LEN)
-            packet_receive, checksum = RDTProtocol.parse(data)
-
-            while checksum != 0 or not packet_receive.ack:
-                self.sendto(packet.encode(), self._recv_from)
-                data, addr = self.recvfrom(200 + RDTProtocol.SEGMENT_LEN)
-                packet_receive, checksum = RDTProtocol.parse(data)
-                print('Send FIN to close')
+            recieveAck = False
+            while not recieveAck:
+                try:
+                    self.settimeout(self.timeout)
+                    self.sendto(packet.encode(), self._recv_from)
+                    data, addr = self.recvfrom(200 + RDTProtocol.SEGMENT_LEN)
+                    packet_receive, checksum = RDTProtocol.parse(data)
+                    print('receive packet  checksum:%d ack:%s' % (checksum, packet_receive.ack))
+                    print('Send FIN to close')
+                    if checksum == 0 and packet_receive.ack:
+                        recieveAck = True
+                    elif checksum == 0 and packet_receive.fin:
+                        packet = RDTProtocol(seqNum=self.seqNum,
+                                             ackNum=self.ackNum, checksum=0, payload=None, syn=False, fin=False,
+                                             ack=True)
+                        self.sendto(packet.encode(), self._recv_from)
+                        print('已发送ack包:%d' % self.ackNum)
+                except Exception as e:
+                    if isinstance(e, socket.timeout):
+                        print('timeout ' + str(self.timeout) + 'sec')
+                        self.updataTimeout(True)
 
             print('Connection is closed')
         #############################################################################
