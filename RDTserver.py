@@ -20,5 +20,6 @@ if __name__=='__main__':
         '''
         make sure the following is reachable
         '''
+        print('-----------------------time to test close-----------------------')
         conn.close()
         print(f'connection finished in {time.perf_counter()-start}s')

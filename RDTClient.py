@@ -8,9 +8,11 @@ if __name__=='__main__':
     # client = socket(AF_INET, SOCK_STREAM) # check what python socket does
     client.connect(('127.0.0.1', 9999))
 
+    # mytest
     # client.send(b'aaa')
-
+    # client.recv(2048)
     # client.close()
+
     echo = b''
     count = 5
     slice_size = 2048
@@ -42,15 +44,13 @@ if __name__=='__main__':
         for i in range(count):
             client.send(encoded)
             while len(echo) < len(encoded)*(i+1):
-                print('接收中')
                 reply = client.recv(slice_size)
                 echo += reply
-
-    client.close()
 
     '''
     make sure the following is reachable
     '''
+    client.close()
 
     print(f'transmitted {len(encoded)*count}bytes in {time.perf_counter()-start}s')
     diff = Differ().compare((data*count).splitlines(keepends=True), echo.decode().splitlines(keepends=True))

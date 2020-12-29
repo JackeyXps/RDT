@@ -32,6 +32,7 @@ class RDTSocket(UnreliableSocket):
         #############################################################################
         # TODO: ADD YOUR NECESSARY ATTRIBUTES HERE
         #############################################################################
+        self.isClient = True
         self.timeout = 1
         self.congWin = 1
         self.threshold = 100
@@ -49,6 +50,7 @@ class RDTSocket(UnreliableSocket):
         self.packetDict_receive = {}
         self.receivePacketNum = 0
         self.ackDict_receive = {}
+        self.receiveData = False
         #############################################################################
         #                             END OF YOUR CODE                              #
         #############################################################################
@@ -68,12 +70,12 @@ class RDTSocket(UnreliableSocket):
         data, addr = self.recvfrom(200 + RDTProtocol.SEGMENT_LEN)
         print(data)
         print(addr)
-        packet_receive = RDTProtocol.parse(data)
-        while not packet_receive.syn:
+        packet_receive, checksum = RDTProtocol.parse(data)
+        while not packet_receive.syn or checksum != 0:
             data, addr = self.recvfrom(200 + RDTProtocol.SEGMENT_LEN)
             print(data)
             print(addr)
-            packet_receive = RDTProtocol.parse(data)
+            packet_receive, checksum = RDTProtocol.parse(data)
         conn = RDTSocket(self._rate)
         conn.set_recv_from(addr)
         conn.set_send_to(addr)
@@ -85,16 +87,17 @@ class RDTSocket(UnreliableSocket):
         data, addr = conn.recvfrom(200 + RDTProtocol.SEGMENT_LEN)
         print(data)
         print(addr)
-        packet_receive = RDTProtocol.parse(data)
-        while not packet_receive.ack or not packet_receive.ackNum == conn.seqNum:
+        packet_receive, checksum = RDTProtocol.parse(data)
+        while not packet_receive.ack or not packet_receive.ackNum == conn.seqNum or checksum != 0:
             print('packet_receive.ackNum: %d' % packet_receive.ackNum)
             print(data)
             print(addr)
             conn.sendto(packet.encode(), conn._recv_from)
             data, addr = conn.recvfrom(200 + RDTProtocol.SEGMENT_LEN)
-            packet_receive = RDTProtocol.parse(data)
+            packet_receive, checksum = RDTProtocol.parse(data)
         conn.ackNum = 2
         conn.started = True
+        conn.isClient = False
         threading.Thread(target=conn.receivePacket).start()
         threading.Thread(target=conn.sendPackets).start()
         print('server: Connection established')
@@ -116,22 +119,22 @@ class RDTSocket(UnreliableSocket):
         startTime = time.perf_counter()
         self.sendSeqNum = 1
         threading.Thread(target=self.count).start()
-        self.started = True
         # seqNum: int, ackNum: int, checksum: int, payload: bytes, syn: bool = False, fin: bool = False, ack:bool = False
         packet = RDTProtocol(seqNum=self.sendSeqNum,
                              ackNum=self.sendAckNum, checksum=0, payload=b's', syn=True, fin=False, ack=False)
         self.sendto(packet.encode(), self._send_to)
         data, addr = self.recvfrom(200 + RDTProtocol.SEGMENT_LEN)
-        packet_receive = RDTProtocol.parse(data)
-        while not packet_receive.ack or not packet_receive.syn or not packet_receive.ackNum == self.sendSeqNum:
+        packet_receive, checksum = RDTProtocol.parse(data)
+        while checksum != 0 or not packet_receive.ack or not packet_receive.syn or not packet_receive.ackNum == self.sendSeqNum:
             print('Client syn packet_receive.ackNum: %d' % packet_receive.ackNum)
             self.sendto(packet.encode(), self._send_to)
             data, addr = self.recvfrom(200 + RDTProtocol.SEGMENT_LEN)
-            packet_receive = RDTProtocol.parse(data)
+            packet_receive, checksum = RDTProtocol.parse(data)
         self._send_to = addr
         self._recv_from = self._send_to
         self.sendAckNum = 1
         self.sendSeqNum = 2
+        self.started = True
         packet = RDTProtocol(seqNum=self.sendSeqNum,
                              ackNum=self.sendAckNum, checksum=0, payload=b's', syn=False, fin=False, ack=True)
         self.sendto(packet.encode(), self._send_to)
@@ -161,16 +164,15 @@ class RDTSocket(UnreliableSocket):
         data = b''
         finish = False
         while not finish and len(data) < buffer_size:
-            while self.receivePacketNum == len(self.packetDict_receive):
+            while not self.receiveData:
                 continue
-            self.receivePacketNum = len(self.packetDict_receive)
+            self.receiveData = False
             while self.ackNum in self.packetDict_receive:
                 packet = self.packetDict_receive[self.ackNum]
                 print('receive data packet seq:%d ack:%d payload:%d' % (packet.seqNum, packet.ackNum, len(packet.payload)))
 
                 if len(data) + len(packet.payload) > buffer_size: # 可能有超过buffer_size的bug
                     print('超过buffer data:%d payload length:%d'%(len(data), len(packet.payload)))
-                    self.receivePacketNum -= 1
                     break
                 data = data + packet.payload
                 self.ackNum = (self.ackNum + len(packet.payload)) % RDTProtocol.SEQ_NUM_BOUND
@@ -231,24 +233,59 @@ class RDTSocket(UnreliableSocket):
         #############################################################################
 
         print('Close connection with %s:%s' % self._send_to)
-        startTime = time.perf_counter()
+        if self.isClient:
+            time.sleep(1)
         self.sendSeqNum += 1
-        packet = RDTProtocol(seqNum=self.sendSeqNum,
-                             ackNum=self.sendAckNum, checksum=0, payload=b'f', syn=False, fin=True, ack=False)
-        self.sendto(packet.encode(), self._send_to)
-        self.waitForAck(startTime, packet.seqNum)
-        data, addr = self.recvfrom(200 + RDTProtocol.SEGMENT_LEN)
-        packet_receive = RDTProtocol.parse(data)
-        packet = RDTProtocol(seqNum=self.sendSeqNum,
-                             ackNum=self.sendAckNum, checksum=0, payload=None, syn=False, fin=False, ack=True)
+        self.started = False
+        packet = RDTProtocol(seqNum=self.sendSeqNum, ackNum=self.sendAckNum, checksum=0,
+                             payload=b'f', syn=False, fin=True, ack=False)
+        packet_receive = RDTProtocol(seqNum=self.sendSeqNum, ackNum=self.sendAckNum, checksum=0,
+                                     payload=None, syn=False, fin=False, ack=False)
 
-        t_end = time.perf_counter() + self.maxWaitTime
-        while not packet_receive.fin and time.perf_counter() < t_end:
-            print('packet_receive.ackNum: %d' % packet_receive.ackNum)
+        print('------------seqNum: ' + str(self.seqNum) + '--------------------')
+        print('------------ackNum: ' + str(self.ackNum) + '--------------------')
+        print('------------sendSeqNum: ' + str(self.sendSeqNum) + '--------------------')
+        print('------------sendAckNum: ' + str(self.sendAckNum) + '--------------------')
+        if self.isClient:
+            time.sleep(1)
             self.sendto(packet.encode(), self._recv_from)
             data, addr = self.recvfrom(200 + RDTProtocol.SEGMENT_LEN)
-            packet_receive = RDTProtocol.parse(data)
-        self.started = False
+            packet_receive, checksum = RDTProtocol.parse(data)
+
+            while checksum != 0 or not packet_receive.ack and packet_receive.ackNum != self.sendSeqNum:
+                self.sendto(packet.encode(), self._recv_from)
+                data, addr = self.recvfrom(200 + RDTProtocol.SEGMENT_LEN)
+                packet_receive, checksum = RDTProtocol.parse(data)
+                print('Send FIN to close')
+
+            packet = RDTProtocol(seqNum=self.sendSeqNum, ackNum=self.sendAckNum, checksum=0,
+                                 payload=None, syn=False, fin=False, ack=True)
+            packet_receive = RDTProtocol(seqNum=self.sendSeqNum, ackNum=self.sendAckNum, checksum=0,
+                                         payload=None, syn=False, fin=False, ack=False)
+            self.sendto(packet.encode(), self._recv_from)
+            data, addr = self.recvfrom(200 + RDTProtocol.SEGMENT_LEN)
+            packet_receive, checksum = RDTProtocol.parse(data)
+            while checksum != 0 or not packet_receive.fin:
+                self.sendto(packet.encode(), self._recv_from)
+                data, addr = self.recvfrom(200 + RDTProtocol.SEGMENT_LEN)
+                packet_receive, checksum = RDTProtocol.parse(data)
+                print('send ACK to close')
+            for i in range(6):
+                time.sleep(0.5)
+                self.sendto(packet.encode(), self._recv_from)
+            print('Client is closed')
+        else:
+            self.sendto(packet.encode(), self._recv_from)
+            data, addr = self.recvfrom(200 + RDTProtocol.SEGMENT_LEN)
+            packet_receive, checksum = RDTProtocol.parse(data)
+
+            while checksum != 0 or not packet_receive.ack:
+                self.sendto(packet.encode(), self._recv_from)
+                data, addr = self.recvfrom(200 + RDTProtocol.SEGMENT_LEN)
+                packet_receive, checksum = RDTProtocol.parse(data)
+                print('Send FIN to close')
+
+            print('Connection is closed')
         #############################################################################
         #                             END OF YOUR CODE                              #
         #############################################################################
@@ -381,13 +418,14 @@ class RDTSocket(UnreliableSocket):
             if self.started:
                 try:
                     data, addr = self.recvfrom(200 + RDTProtocol.SEGMENT_LEN)
-                    packet = RDTProtocol.parse(data)
-                    if addr == self._recv_from:
+                    packet, checksum = RDTProtocol.parse(data)
+                    if checksum == 0 and addr == self._recv_from:
                         if packet.ack:
                             self.ackDict_receive[packet.seqNum] = packet
                             print('receive ack packet from %s %s' % addr)
                             print('seq:%d ack:%d' % (packet.seqNum, packet.ackNum))
                         elif packet.payload and not packet.syn:
+                            self.receiveData = True
                             self.packetDict_receive[packet.seqNum - len(packet.payload)] = packet
                             print('receive data packet from %s %s' % addr)
                             print('seq:%d ack:%d payloadLength:%d' % (packet.seqNum, packet.ackNum, len(packet.payload)))
@@ -487,23 +525,19 @@ class RDTProtocol:
         return bytes(arr)
 
     @staticmethod
-    def parse(segment: Union[bytes, bytearray]) -> 'RDTProtocol':
+    def parse(segment: Union[bytes, bytearray]) -> ('RDTProtocol', int):
         """Parse raw bytes into an RDTSegment object"""
-        try:
-            # assert len(segment) == RDTProtocol.SEGMENT_LEN
-            # assert 0 <= len(segment) - 12 <= RDTProtocol.MAX_PAYLOAD_LEN
-            print('calc_checksum: %d' % calc_checksum(segment))
-            assert calc_checksum(segment) == 0
-            head, seq_num, ack_num, checksum = struct.unpack('!HIIH', segment[0:12])
-            syn = (head & 0x8000) != 0
-            fin = (head & 0x4000) != 0
-            ack = (head & 0x2000) != 0
-            length = head & 0x1FFF
-            # assert length + 6 == len(segment)
-            payload = segment[12:12 + length]
-            return RDTProtocol(seq_num, ack_num, checksum, payload, syn, fin, ack)
-        except AssertionError as e:
-            raise ValueError from e
+        # assert len(segment) == RDTProtocol.SEGMENT_LEN
+        # assert 0 <= len(segment) - 12 <= RDTProtocol.MAX_PAYLOAD_LEN
+        # print('calc_checksum: %d' % calc_checksum(segment))
+        head, seq_num, ack_num, checksum = struct.unpack('!HIIH', segment[0:12])
+        syn = (head & 0x8000) != 0
+        fin = (head & 0x4000) != 0
+        ack = (head & 0x2000) != 0
+        length = head & 0x1FFF
+        # assert length + 6 == len(segment)
+        payload = segment[12:12 + length]
+        return RDTProtocol(seq_num, ack_num, checksum, payload, syn, fin, ack), calc_checksum(segment)
 
 
 def calc_checksum(segment: Union[bytes, bytearray]) -> int:

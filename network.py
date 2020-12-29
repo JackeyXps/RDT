@@ -48,9 +48,15 @@ class Server(ThreadingUDPServer):
                 return 
             for i in range(len(data)-1):
                 if random.random() < corrupt_rate:
-                    data[i] = data[:i] + (data[i]+1).to_bytes(1,'big) + data[i+1:]
+                    data = data[:i] + (data[i]+1).to_bytes(1,'big) + data[i+1:]
             """
-            
+            loss_rate = 0.000001
+            corrupt_rate = 0.00000001
+            if random.random() < loss_rate:
+                return
+            for i in range(len(data) - 9):
+                if random.random() < corrupt_rate:
+                    data = data[:i+8] + (data[i+8] + 1).to_bytes(1, 'big') + data[i+9:]
         """
         this part is not blocking and is executed by multiple threads in parallel
         you can add random delay here, this would change the order of arrival at the receiver side.
