@@ -50,8 +50,8 @@ class Server(ThreadingUDPServer):
                 if random.random() < corrupt_rate:
                     data = data[:i] + (data[i]+1).to_bytes(1,'big) + data[i+1:]
             """
-            loss_rate = 0.0000001
-            corrupt_rate = 0.00000001
+            loss_rate = 0.1
+            corrupt_rate = 0.0001
             if random.random() < loss_rate:
                 return
             for i in range(len(data) - 9):

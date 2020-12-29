@@ -14,7 +14,7 @@ if __name__=='__main__':
     # client.close()
 
     echo = b''
-    count = 5
+    count = 1
     slice_size = 2048
     blocking_send = False
 

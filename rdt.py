@@ -172,7 +172,8 @@ class RDTSocket(UnreliableSocket):
         #############################################################################
         data = b''
         finish = False
-        while not finish and len(data) < buffer_size:
+        overflow = False
+        while not finish and not overflow:
             while not self.receiveData:
                 continue
             self.receiveData = False
@@ -182,6 +183,7 @@ class RDTSocket(UnreliableSocket):
 
                 if len(data) + len(packet.payload) > buffer_size: # 可能有超过buffer_size的bug
                     print('超过buffer data:%d payload length:%d'%(len(data), len(packet.payload)))
+                    overflow = True
                     break
                 data = data + packet.payload
                 self.ackNum = (self.ackNum + len(packet.payload)) % RDTProtocol.SEQ_NUM_BOUND
@@ -340,7 +342,6 @@ class RDTSocket(UnreliableSocket):
         while True:
             if self.started:
                 if sentPackets < len(self.packetDict):
-                    startTime = time.perf_counter()
                     seqNumList = sorted(self.packetDict)
                     print(seqNumList)
                     for seqNum in seqNumList:
@@ -352,7 +353,8 @@ class RDTSocket(UnreliableSocket):
                             print('send seq:%d' % self.packetDict[seqNum].seqNum)
                             if count % self.congWin == 0:
                                 count = 0
-                                self.waitForAck(startTime, self.packetDict[seqNum].seqNum)
+
+                                self.waitForAck(self.packetDict[seqNum].seqNum)
                                 # seqList = sorted(self.packetDict)
                                 # for seq in seqList:
                                 #     if seq <= seqNum:
@@ -360,7 +362,8 @@ class RDTSocket(UnreliableSocket):
             else:
                 break
 
-    def waitForAck(self, startTime, sendSeqNum):
+    def waitForAck(self, sendSeqNum):
+        # startTime = time.perf_counter()
         print('send '+str(sendSeqNum))
         ackFinish = False
         resendTimes = 0
@@ -415,17 +418,17 @@ class RDTSocket(UnreliableSocket):
                 self.updataCongWin(True, timeout)
                 self.updataTimeout(True)
 
-        endTime = time.perf_counter()
-        rtt = endTime - startTime
+        # endTime = time.perf_counter()
+        # rtt = endTime - startTime
         self.updataCongWin(resendTimes != 0, timeout)
-        self.updataTimeout(resendTimes != 0, rtt)
+        self.updataTimeout(resendTimes != 0)
 
     def updataTimeout(self, resend, rtt=1):
         if resend == True:
             if self.timeout*2 < self.maxTimeout:
                 self.timeout *= 2
         else:
-            self.timeout = 0.8 * self.timeout + 0.2 * rtt
+            self.timeout = 0.8 * self.timeout
 
     def updataCongWin(self, resend, timeout):
         if resend == True and self.congWin > 1:
@@ -445,7 +448,7 @@ class RDTSocket(UnreliableSocket):
         while len(self.ackDict_receive) == 0 and time.perf_counter() - start < self.timeout:
             continue
         if time.perf_counter() - start >= self.timeout:
-            raise Exception(socket.timeout)
+            raise socket.timeout
         else:
             print(sorted(self.ackDict_receive))
             ackNum, packet = self.ackDict_receive.popitem()
@@ -468,7 +471,7 @@ class RDTSocket(UnreliableSocket):
                             print('receive data packet from %s %s' % addr)
                             print('seq:%d ack:%d payloadLength:%d' % (packet.seqNum, packet.ackNum, len(packet.payload)))
                 except Exception:
-                    continue
+                    print('收包超时')
             else:
                 break
 
