@@ -96,6 +96,7 @@ class RDTSocket(UnreliableSocket):
         conn.ackNum = 2
         conn.started = True
         threading.Thread(target=conn.receivePacket).start()
+        threading.Thread(target=conn.sendPackets).start()
         print('server: Connection established')
         #############################################################################
         #                             END OF YOUR CODE                              #
@@ -135,6 +136,7 @@ class RDTSocket(UnreliableSocket):
                              ackNum=self.sendAckNum, checksum=0, payload=b's', syn=False, fin=False, ack=True)
         self.sendto(packet.encode(), self._send_to)
         threading.Thread(target=self.receivePacket).start()
+        threading.Thread(target=self.sendPackets).start()
         print('client: Connection to %s:%s established' % self._send_to)
         #############################################################################
         # raise NotImplementedError()
@@ -157,25 +159,31 @@ class RDTSocket(UnreliableSocket):
         # TODO: YOUR CODE HERE                                                      #
         #############################################################################
         data = b''
-        while self.started and len(data) < buffer_size:
+        finish = False
+        while not finish and len(data) < buffer_size:
             while self.receivePacketNum == len(self.packetDict_receive):
                 continue
             self.receivePacketNum = len(self.packetDict_receive)
             while self.ackNum in self.packetDict_receive:
                 packet = self.packetDict_receive[self.ackNum]
                 print('receive data packet seq:%d ack:%d payload:%d' % (packet.seqNum, packet.ackNum, len(packet.payload)))
+
                 if len(data) + len(packet.payload) > buffer_size: # 可能有超过buffer_size的bug
-                    return data
-                data += packet.payload
+                    print('超过buffer data:%d payload length:%d'%(len(data), len(packet.payload)))
+                    self.receivePacketNum -= 1
+                    break
+                data = data + packet.payload
                 self.ackNum = (self.ackNum + len(packet.payload)) % RDTProtocol.SEQ_NUM_BOUND
-                print('ackNum:%d' % self.ackNum)
+                print('当前我方ackNum:%d' % self.ackNum)
                 if packet.fin:
-                    self.started = False
-                    data = b''
+                    finish = True
+                    if packet.payload == b'f':
+                        data = None
                     break
             packet = RDTProtocol(seqNum=self.seqNum,
                                  ackNum=self.ackNum, checksum=0, payload=None, syn=False, fin=False, ack=True)
             self.sendto(packet.encode(), self._recv_from)
+            print('已发送ack包:%d'%self.ackNum)
             # for k in dataList.keys():
             # RuntimeError: dictionary changed size during iteration
         # for k in list(self.packetDict_receive.keys()):
@@ -198,13 +206,15 @@ class RDTSocket(UnreliableSocket):
         packetNum = 0
         while packetNum * self.MSS < len(data):
             self.sendSeqNum = (self.sendSeqNum + len(data[packetNum * self.MSS: packetNum * self.MSS + self.MSS]))%RDTProtocol.SEQ_NUM_BOUND
-            packet = RDTProtocol(seqNum=self.sendSeqNum, ackNum=self.sendAckNum, checksum=0,
-                                 payload=data[packetNum * self.MSS: packetNum * self.MSS + self.MSS], syn=False,
-                                 fin=False, ack=False)
-            print('pkt:%d with %d bytes' % (packetNum, len(data[packetNum * self.MSS: packetNum * self.MSS + self.MSS])))
+            if len(data[packetNum * self.MSS: packetNum * self.MSS + self.MSS]) < self.MSS:
+                packet = RDTProtocol(seqNum=self.sendSeqNum, ackNum=self.sendAckNum, checksum=0, payload=data[packetNum * self.MSS: packetNum * self.MSS + self.MSS], syn=False, fin=True, ack=False)
+            else:
+                packet = RDTProtocol(seqNum=self.sendSeqNum, ackNum=self.sendAckNum, checksum=0,
+                                     payload=data[packetNum * self.MSS: packetNum * self.MSS + self.MSS], syn=False,
+                                     fin=False, ack=False)
+            print('pkt:%d seq: %d with %d bytes' % (packetNum, packet.seqNum, len(data[packetNum * self.MSS: packetNum * self.MSS + self.MSS])))
             self.packetDict[packet.seqNum] = packet
             packetNum += 1
-        threading.Thread(target=self.sendPackets).start()
         #############################################################################
         # raise NotImplementedError()
         #############################################################################
@@ -238,7 +248,6 @@ class RDTSocket(UnreliableSocket):
             self.sendto(packet.encode(), self._recv_from)
             data, addr = self.recvfrom(200 + RDTProtocol.SEGMENT_LEN)
             packet_receive = RDTProtocol.parse(data)
-
         self.started = False
         #############################################################################
         #                             END OF YOUR CODE                              #
@@ -252,19 +261,30 @@ class RDTSocket(UnreliableSocket):
         self._recv_from = recv_from
 
     def sendPackets(self):
-        startTime = time.perf_counter()
+        sentPackets = 0
+        currentSeq = 0
         count = 0
-        seqNumList = sorted(self.packetDict)
-        print(seqNumList)
-        for seqNum in seqNumList:
-            count += 1
-            self.sendto(self.packetDict[seqNum].encode(), self._send_to)
-            print('send seq:%d' % self.packetDict[seqNum].seqNum)
-            if count % self.congWin == 0:
-                self.waitForAck(startTime, self.packetDict[seqNum].seqNum)
+        while True:
+            if self.started:
+                if sentPackets < len(self.packetDict):
+                    startTime = time.perf_counter()
+                    seqNumList = sorted(self.packetDict)
+                    print(seqNumList)
+                    for seqNum in seqNumList:
+                        if seqNum > currentSeq:
+                            self.sendto(self.packetDict[seqNum].encode(), self._send_to)
+                            count += 1
+                            sentPackets += 1
+                            currentSeq = seqNum
+                            print('send seq:%d' % self.packetDict[seqNum].seqNum)
+                            if count % self.congWin == 0:
+                                count = 0
+                                self.waitForAck(startTime, self.packetDict[seqNum].seqNum)
+            else:
+                break
 
     def waitForAck(self, startTime, sendSeqNum):
-        # print('send '+str(self.sendSeqNum))
+        print('send '+str(sendSeqNum))
         ackFinish = False
         resendTimes = 0
         duplicateTimes = 0
@@ -273,15 +293,19 @@ class RDTSocket(UnreliableSocket):
             try:
                 self.settimeout(self.timeout)
                 ackNum, syn = self.receiveAck()
-                print('ack: %d' % ackNum)
+                print('当前对方ack: %d' % ackNum)
                 if syn:
                     print('Client disconnection')
                     packet = RDTProtocol(seqNum=2,
                                          ackNum=1, checksum=0, payload=b's', syn=True, fin=False,
                                          ack=True)
                     self.sendto(packet.encode(), self._send_to)
+                if self.sendAckNum >= sendSeqNum:
+                    print('成功发送:%d' % self.sendAckNum)
+                    ackFinish = True
                 if ackNum >= sendSeqNum:
                     self.sendAckNum = ackNum
+                    print('成功发送:%d'%self.sendAckNum)
                     ackFinish = True
                 elif ackNum > self.sendAckNum:
                     self.sendAckNum = ackNum
@@ -295,19 +319,24 @@ class RDTSocket(UnreliableSocket):
                         raise Exception
 
             except Exception as e:
-                sendNum = 0
-                keyList = sorted(self.packetDict)
-                for key in keyList:
-                    if key > self.sendAckNum:
-                        sendNum = key
-                self.resendTimes += 1
-                if isinstance(e, socket.timeout):
-                    timeout = True
-                print('seqNum: %d' % sendSeqNum)
-                resendTimes += 1
-                print('resend %d at %d times' % (sendNum, resendTimes))
-                print('timeout ' + str(self.timeout) + 'sec')
-                self.sendto(self.packetDict[sendNum].encode(), self._send_to)
+                if self.sendAckNum >= sendSeqNum:
+                    print('成功发送:%d' % self.sendAckNum)
+                    ackFinish = True
+                else:
+                    sendNum = 0
+                    keyList = sorted(self.packetDict)
+                    for key in keyList:
+                        if key > self.sendAckNum:
+                            sendNum = key
+                            break
+                    self.resendTimes += 1
+                    if isinstance(e, socket.timeout):
+                        timeout = True
+                        print('timeout ' + str(self.timeout) + 'sec')
+                    print('seqNum: %d' % sendSeqNum)
+                    resendTimes += 1
+                    print('resend %d at %d times' % (sendNum, resendTimes))
+                    self.sendto(self.packetDict[sendNum].encode(), self._send_to)
                 self.updataCongWin(True, timeout)
                 self.updataTimeout(True)
 
@@ -343,6 +372,7 @@ class RDTSocket(UnreliableSocket):
         if time.perf_counter() - start >= self.timeout:
             raise Exception(socket.timeout)
         else:
+            print(sorted(self.ackDict_receive))
             seqNum, packet = self.ackDict_receive.popitem()
             return packet.ackNum, packet.syn
 
