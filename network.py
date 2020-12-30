@@ -64,6 +64,7 @@ class Server(ThreadingUDPServer):
         for example:
         time.sleep(random.random())
         """
+        time.sleep(random.random())
 
         to = bytes_to_addr(data[:8])
         print(client_address, to) # observe tht traffic
@@ -72,6 +73,6 @@ class Server(ThreadingUDPServer):
 server_address = ('127.0.0.1', 12345)
 
 if __name__=='__main__':
-    with Server(server_address) as server:
+    with Server(server_address, rate=1024) as server:
         server.serve_forever()
         
